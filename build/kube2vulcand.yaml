@@ -1,0 +1,120 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-lb
+  namespace: kube-system
+  labels:
+    k8s-app: kube-lb
+    kubernetes.io/cluster-service: "true"
+    kubernetes.io/name: "KubeLoadBalancer"
+spec:
+  type: NodePort
+  selector:
+    k8s-app: kube-lb
+  ports:
+  - name: http
+    port: 8181
+    nodePort: 30808
+    protocol: TCP
+  - name: api
+    port: 8182
+    protocol: TCP
+    nodePort: 32033
+---
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: kube-lb
+  namespace: kube-system
+  labels:
+    k8s-app: kube-lb
+    version: v1
+    kubernetes.io/cluster-service: "true"
+spec:
+  selector:
+    k8s-app: kube-lb
+    version: v1
+  template:
+    metadata:
+      labels:
+        k8s-app: kube-lb
+        version: v1
+        kubernetes.io/cluster-service: "true"
+    spec:
+      containers:
+      - name: etcd
+        image: gcr.io/google_containers/etcd:2.0.9
+        resources:
+          # keep request = limit to keep this container in guaranteed class
+          limits:
+            cpu: 100m
+            memory: 50Mi
+          requests:
+            cpu: 100m
+            memory: 50Mi
+        command:
+        - /usr/local/bin/etcd
+        - -data-dir
+        - /var/etcd/data
+        - -listen-client-urls
+        - http://127.0.0.1:2379,http://127.0.0.1:4001
+        - -advertise-client-urls
+        - http://127.0.0.1:2379,http://127.0.0.1:4001
+        - -initial-cluster-token
+        - vulcand-etcd
+        volumeMounts:
+        - name: etcd-storage
+          mountPath: /var/etcd/data
+      - name: kube2vulcand
+        image: jtblin/kube2vulcand:e4671a1
+        resources:
+          # keep request = limit to keep this container in guaranteed class
+          limits:
+            cpu: 100m
+            memory: 50Mi
+          requests:
+            cpu: 100m
+            memory: 50Mi
+        args:
+        - --v=1
+        # command = "kube2vulcand"
+      - name: vulcand
+        image: jtblin/vulcand:85c983b
+        resources:
+          # keep request = limit to keep this container in guaranteed class
+          limits:
+            cpu: 100m
+            memory: 50Mi
+          requests:
+            cpu: 100m
+            memory: 50Mi
+        args:
+        # command = "/app/vulcand"
+        - -etcd=http://127.0.0.1:4001
+        ports:
+        - containerPort: 8181
+          hostPort: 8181
+          protocol: TCP
+          name: http
+        - containerPort: 8182
+          hostPort: 8182
+          protocol: TCP
+          name: api
+        livenessProbe:
+          httpGet:
+            path: /v2/status
+            port: 8182
+            scheme: HTTP
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /v2/status
+            port: 8182
+            scheme: HTTP
+          initialDelaySeconds: 1
+          timeoutSeconds: 5
+      volumes:
+      - name: etcd-storage
+        emptyDir: {}

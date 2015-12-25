@@ -1,0 +1,32 @@
+---
+etcd:
+  image: gcr.io/google_containers/etcd:2.0.9
+  entrypoint: /usr/local/bin/etcd -data-dir /var/etcd/data -listen-client-urls http://0.0.0.0:2379,http://0.0.0.0:4001 -advertise-client-urls http://etcd:2379,http://etcd:4001 -initial-cluster-token vulcand-etcd
+  hostname: etcd
+  restart: always
+kube2vulcand:
+  build: build/.
+  entrypoint: kube2vulcand --kubecfg-file=/etc/kubernetes/config --etcd-server=http://etcd:4001 --v=1
+  environment:
+    CERT_PATH:
+  links:
+    - etcd
+  restart: always
+  volumes:
+    - ~/.kube/config:/etc/kubernetes/config:ro
+    - ${KUBE_CA_PATH}:${KUBE_CA_PATH}:ro
+vulcand:
+  entrypoint: /app/vulcand -etcd=http://etcd:4001
+  image: jtblin/vulcand:85c983b
+  links:
+    - etcd
+  ports:
+    - "8181:8181"
+    - "8182:8182"
+  restart: always
+alpine:
+  image: jtblin/curl
+  entrypoint: /bin/sh -c "while :; do sleep 60; done"
+  links:
+    - etcd
+  restart: always

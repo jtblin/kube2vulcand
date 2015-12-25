@@ -51,7 +51,11 @@ var (
 	argEtcdServer          = pflag.String("etcd-server", "http://127.0.0.1:4001", "URL to etcd server")
 	argKubecfgFile         = pflag.String("kubecfg-file", "", "Location of kubecfg file for access to kubernetes master service; --kube-master-url overrides the URL part of this; if neither this nor --kube-master-url are provided, defaults to service account tokens")
 	argKubeMasterURL       = pflag.String("kube-master-url", "", "URL to reach kubernetes master. Env variables in this flag will be expanded.")
+	argVersion             = pflag.Bool("version", false, "Display the version number and exit.")
 )
+
+// VERSION will be set at build time via linker magic.
+var VERSION string
 
 const (
 	// vulcand backend supported type
@@ -377,6 +381,11 @@ func main() {
 	util.InitFlags()
 	util.InitLogs()
 	defer util.FlushLogs()
+
+	if *argVersion {
+		fmt.Println(VERSION)
+		os.Exit(0)
+	}
 
 	kv := kube2vulcand{etcdMutationTimeout: *argEtcdMutationTimeout}
 

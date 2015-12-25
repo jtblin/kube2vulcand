@@ -25,10 +25,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
-
-	"strconv"
 
 	etcd "github.com/coreos/go-etcd/etcd"
 	"github.com/golang/glog"
@@ -81,38 +80,12 @@ type kube2vulcand struct {
 	servicesStore kcache.Store
 }
 
-// Removes 'backend' from etcd.
-func (kv *kube2vulcand) removeBackend(name string) error {
-	glog.V(1).Infof("Removing %s backend from vulcand", name)
-	resp, err := kv.etcdClient.RawGet(backendPath(name), false, true)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		glog.V(1).Infof("Backend %q does not exist in etcd", name)
-		return nil
-	}
-	_, err = kv.etcdClient.Delete(backendPath(name), true)
-	return err
-}
-
-// Removes 'frontend' from etcd.
-func (kv *kube2vulcand) removeFrontend(name string) error {
-	glog.V(1).Infof("Removing frontend %s from vulcand", name)
-	resp, err := kv.etcdClient.RawGet(frontendPath(name), false, true)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		glog.V(1).Infof("Frontend %q does not exist in etcd", name)
-		return nil
-	}
-	_, err = kv.etcdClient.Delete(frontendPath(name), true)
-	return err
-}
-
 func backendPath(name string) string {
 	return vulcandPath("backends", name, "backend")
+}
+
+func backendBasePath(name string) string {
+	return vulcandPath("backends", name)
 }
 
 func backendServerPath(name string) string {
@@ -121,6 +94,10 @@ func backendServerPath(name string) string {
 
 func frontendPath(name string) string {
 	return vulcandPath("frontends", name, "frontend")
+}
+
+func frontendBasePath(name string) string {
+	return vulcandPath("frontends", name)
 }
 
 func vulcandPath(keys ...string) string {
@@ -142,6 +119,36 @@ func (kv *kube2vulcand) writeVulcandBackendServer(name string, data string) erro
 func (kv *kube2vulcand) writeVulcandFrontend(name string, data string) error {
 	// Set with no TTL, and hope that kubernetes events are accurate.
 	_, err := kv.etcdClient.Set(frontendPath(name), data, uint64(0))
+	return err
+}
+
+// Removes 'backend' from etcd.
+func (kv *kube2vulcand) removeBackend(name string) error {
+	glog.V(1).Infof("Removing backend %s from vulcand", name)
+	resp, err := kv.etcdClient.RawGet(backendBasePath(name), false, true)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		glog.V(1).Infof("Backend %q does not exist in etcd", name)
+		return nil
+	}
+	_, err = kv.etcdClient.Delete(backendBasePath(name), true)
+	return err
+}
+
+// Removes 'frontend' from etcd.
+func (kv *kube2vulcand) removeFrontend(name string) error {
+	glog.V(1).Infof("Removing frontend %s from vulcand", name)
+	resp, err := kv.etcdClient.RawGet(frontendBasePath(name), false, true)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		glog.V(1).Infof("Frontend %q does not exist in etcd", name)
+		return nil
+	}
+	_, err = kv.etcdClient.Delete(frontendBasePath(name), true)
 	return err
 }
 
@@ -201,11 +208,11 @@ func (kv *kube2vulcand) mutateEtcdOrDie(mutator func() error) {
 	}
 }
 
-func buildBackendIDString(namespace, name, port string) string {
-	return fmt.Sprintf("%s:%s:%s", namespace, name, port)
+func buildBackendIDString(labels ...string) string {
+	return strings.Join(labels, ":")
 }
 
-func buildBackendServerString(namespace, name, port string) string {
+func buildBackendServerURLString(name, namespace, port string) string {
 	return fmt.Sprintf("http://%s.%s:%s", name, namespace, port)
 }
 
@@ -245,10 +252,10 @@ func (kv *kube2vulcand) newIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				frontendName := buildFrontendNameString(ing.Name, ing.Namespace, rule.Host, path.Path)
-				backendID := buildBackendIDString(ing.Namespace, path.Backend.ServiceName, strconv.Itoa(path.Backend.ServicePort.IntVal))
+				name := buildFrontendNameString(ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path))
+				backendID := buildBackendIDString("http", path.Backend.ServiceName, ing.Namespace, strconv.Itoa(path.Backend.ServicePort.IntVal))
 				frontend := &Frontend{BackendID: backendID, Route: buildRouteString(rule.Host, path.Path)}
-				kv.mutateEtcdOrDie(func() error { return kv.addFrontend(frontendName, frontend) })
+				kv.mutateEtcdOrDie(func() error { return kv.addFrontend(name, frontend) })
 			}
 		}
 	}
@@ -258,7 +265,7 @@ func (kv *kube2vulcand) removeIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				name := buildFrontendNameString(ing.Name, ing.Namespace, rule.Host, path.Path)
+				name := buildFrontendNameString(ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path))
 				kv.mutateEtcdOrDie(func() error { return kv.removeFrontend(name) })
 			}
 		}
@@ -274,10 +281,12 @@ func (kv *kube2vulcand) updateIngress(oldObj, newObj interface{}) {
 func (kv *kube2vulcand) newService(obj interface{}) {
 	if s, ok := obj.(*kapi.Service); ok {
 		for _, port := range s.Spec.Ports {
-			backendID := buildBackendIDString(s.Namespace, s.Name, strconv.Itoa(port.Port))
-			kv.mutateEtcdOrDie(func() error { return kv.addBackend(backendID, &Backend{Type: backendType}) })
-			backendServer := buildBackendServerString(s.Namespace, s.Name, strconv.Itoa(port.Port))
-			kv.mutateEtcdOrDie(func() error { return kv.addBackendServer(backendID, &BackendServer{URL: backendServer}) })
+			if port.Protocol == kapi.ProtocolTCP {
+				ID := buildBackendIDString("http", s.Name, s.Namespace, strconv.Itoa(port.Port))
+				kv.mutateEtcdOrDie(func() error { return kv.addBackend(ID, &Backend{Type: backendType}) })
+				server := buildBackendServerURLString(s.Name, s.Namespace, strconv.Itoa(port.Port))
+				kv.mutateEtcdOrDie(func() error { return kv.addBackendServer(ID, &BackendServer{URL: server}) })
+			}
 		}
 	}
 }
@@ -285,8 +294,10 @@ func (kv *kube2vulcand) newService(obj interface{}) {
 func (kv *kube2vulcand) removeService(obj interface{}) {
 	if s, ok := obj.(*kapi.Service); ok {
 		for _, port := range s.Spec.Ports {
-			backendID := buildBackendIDString(s.Namespace, s.Name, strconv.Itoa(port.Port))
-			kv.mutateEtcdOrDie(func() error { return kv.removeBackend(backendID) })
+			if port.Protocol == kapi.ProtocolTCP {
+				backendID := buildBackendIDString("http", s.Name, s.Namespace, strconv.Itoa(port.Port))
+				kv.mutateEtcdOrDie(func() error { return kv.removeBackend(backendID) })
+			}
 		}
 	}
 }

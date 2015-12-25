@@ -233,11 +233,6 @@ func createIngressLW(kubeClient *kclient.ExtensionsClient) *kcache.ListWatch {
 	return kcache.NewListWatchFromClient(kubeClient, "ingresses", kapi.NamespaceAll, kSelector.Everything())
 }
 
-// Returns a cache.ListWatch that gets all changes to services.
-func createServiceLW(kubeClient *kclient.Client) *kcache.ListWatch {
-	return kcache.NewListWatchFromClient(kubeClient, "services", kapi.NamespaceAll, kSelector.Everything())
-}
-
 type Backend struct {
 	Type string
 }
@@ -256,10 +251,19 @@ func (kv *kube2vulcand) newIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				name := buildFrontendNameString(frontendType, ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path))
+				frontendID := buildFrontendNameString(frontendType, ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path))
 				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace, strconv.Itoa(path.Backend.ServicePort.IntVal))
 				frontend := &Frontend{BackendID: backendID, Route: buildRouteString(rule.Host, path.Path), Type: frontendType}
-				kv.mutateEtcdOrDie(func() error { return kv.addFrontend(name, frontend) })
+				backendServerURL := buildBackendServerURLString(path.Backend.ServiceName, ing.Namespace, strconv.Itoa(path.Backend.ServicePort.IntVal))
+				kv.mutateEtcdOrDie(func() error {
+					if err := kv.addBackend(backendID, &Backend{Type: backendType}); err != nil {
+						return err
+					}
+					if err := kv.addBackendServer(backendID, &BackendServer{URL: backendServerURL}); err != nil {
+						return err
+					}
+					return kv.addFrontend(frontendID, frontend)
+				})
 			}
 		}
 	}
@@ -269,8 +273,14 @@ func (kv *kube2vulcand) removeIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				name := buildFrontendNameString(frontendType, ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path))
-				kv.mutateEtcdOrDie(func() error { return kv.removeFrontend(name) })
+				frontendID := buildFrontendNameString(frontendType, ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path))
+				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace, strconv.Itoa(path.Backend.ServicePort.IntVal))
+				kv.mutateEtcdOrDie(func() error {
+					if err := kv.removeBackend(backendID); err != nil {
+						return err
+					}
+					return kv.removeFrontend(frontendID)
+				})
 			}
 		}
 	}
@@ -280,36 +290,6 @@ func (kv *kube2vulcand) updateIngress(oldObj, newObj interface{}) {
 	// TODO: Avoid unwanted updates.
 	kv.removeIngress(oldObj)
 	kv.newIngress(newObj)
-}
-
-func (kv *kube2vulcand) newService(obj interface{}) {
-	if s, ok := obj.(*kapi.Service); ok {
-		for _, port := range s.Spec.Ports {
-			if port.Protocol == kapi.ProtocolTCP {
-				ID := buildBackendIDString(backendType, s.Name, s.Namespace, strconv.Itoa(port.Port))
-				kv.mutateEtcdOrDie(func() error { return kv.addBackend(ID, &Backend{Type: backendType}) })
-				server := buildBackendServerURLString(s.Name, s.Namespace, strconv.Itoa(port.Port))
-				kv.mutateEtcdOrDie(func() error { return kv.addBackendServer(ID, &BackendServer{URL: server}) })
-			}
-		}
-	}
-}
-
-func (kv *kube2vulcand) removeService(obj interface{}) {
-	if s, ok := obj.(*kapi.Service); ok {
-		for _, port := range s.Spec.Ports {
-			if port.Protocol == kapi.ProtocolTCP {
-				backendID := buildBackendIDString(backendType, s.Name, s.Namespace, strconv.Itoa(port.Port))
-				kv.mutateEtcdOrDie(func() error { return kv.removeBackend(backendID) })
-			}
-		}
-	}
-}
-
-func (kv *kube2vulcand) updateService(oldObj, newObj interface{}) {
-	// TODO: Avoid unwanted updates.
-	kv.removeService(oldObj)
-	kv.newService(newObj)
 }
 
 func newEtcdClient(etcdServer string) (*etcd.Client, error) {
@@ -415,21 +395,6 @@ func watchForIngresses(kubeClient *kclient.ExtensionsClient, kv *kube2vulcand) k
 	return ingressStore
 }
 
-func watchForServices(kubeClient *kclient.Client, kv *kube2vulcand) kcache.Store {
-	serviceStore, serviceController := kframework.NewInformer(
-		createServiceLW(kubeClient),
-		&kapi.Service{},
-		resyncPeriod,
-		kframework.ResourceEventHandlerFuncs{
-			AddFunc:    kv.newService,
-			DeleteFunc: kv.removeService,
-			UpdateFunc: kv.updateService,
-		},
-	)
-	go serviceController.Run(util.NeverStop)
-	return serviceStore
-}
-
 func main() {
 	// TODO: replace by non k8s code / logs
 	util.InitFlags()
@@ -450,7 +415,6 @@ func main() {
 	}
 
 	kv.ingressesStore = watchForIngresses(kubeClient.ExtensionsClient, &kv)
-	kv.servicesStore = watchForServices(kubeClient, &kv)
 
 	select {}
 }

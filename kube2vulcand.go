@@ -28,7 +28,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	etcd "github.com/coreos/go-etcd/etcd"
@@ -61,17 +60,14 @@ const (
 	resyncPeriod = 30 * time.Minute
 	// Base vulcand etcd key
 	etcdKey = "/vulcand"
+	// vulcand backend type
+	backendType = "http"
 )
 
 type etcdClient interface {
 	Set(path, value string, ttl uint64) (*etcd.Response, error)
 	RawGet(key string, sort, recursive bool) (*etcd.RawResponse, error)
 	Delete(path string, recursive bool) (*etcd.Response, error)
-}
-
-type nameNamespace struct {
-	name      string
-	namespace string
 }
 
 type kube2vulcand struct {
@@ -82,16 +78,29 @@ type kube2vulcand struct {
 	// Etcd mutation timeout.
 	etcdMutationTimeout time.Duration
 	// A cache that contains all the endpoints in the system.
-	endpointsStore kcache.Store
+	ingressStore kcache.Store
 	// A cache that contains all the servicess in the system.
 	servicesStore kcache.Store
-	// Lock for controlling access to headless services.
-	mlock sync.Mutex
 }
 
-// Removes 'subdomain' from etcd.
+// Removes 'backend' from etcd.
+func (ks *kube2vulcand) removeBackend(name string) error {
+	glog.V(2).Infof("Removing %s backend from vulcand", name)
+	resp, err := ks.etcdClient.RawGet(backendPath(name), false, true)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		glog.V(2).Infof("Backend %q does not exist in etcd", name)
+		return nil
+	}
+	_, err = ks.etcdClient.Delete(backendPath(name), true)
+	return err
+}
+
+// Removes 'frontend' from etcd.
 func (ks *kube2vulcand) removeFrontend(name string) error {
-	glog.V(2).Infof("Removing %s from Vulcand", name)
+	glog.V(2).Infof("Removing frontend %s from vulcand", name)
 	resp, err := ks.etcdClient.RawGet(frontendPath(name), false, true)
 	if err != nil {
 		return err
@@ -104,6 +113,14 @@ func (ks *kube2vulcand) removeFrontend(name string) error {
 	return err
 }
 
+func backendPath(name string) string {
+	return vulcandPath("backends", name, "backend")
+}
+
+func backendServerPath(name string) string {
+	return vulcandPath("backends", name, "servers", "server")
+}
+
 func frontendPath(name string) string {
 	return vulcandPath("frontends", name, "frontend")
 }
@@ -112,10 +129,44 @@ func vulcandPath(keys ...string) string {
 	return strings.Join(append([]string{etcdKey}, keys...), "/")
 }
 
+func (ks *kube2vulcand) writeVulcandBackend(name string, data string) error {
+	// Set with no TTL, and hope that kubernetes events are accurate.
+	_, err := ks.etcdClient.Set(backendPath(name), data, uint64(0))
+	return err
+}
+
+func (ks *kube2vulcand) writeVulcandBackendServer(name string, data string) error {
+	// Set with no TTL, and hope that kubernetes events are accurate.
+	_, err := ks.etcdClient.Set(backendServerPath(name), data, uint64(0))
+	return err
+}
+
 func (ks *kube2vulcand) writeVulcandFrontend(name string, data string) error {
 	// Set with no TTL, and hope that kubernetes events are accurate.
 	_, err := ks.etcdClient.Set(frontendPath(name), data, uint64(0))
 	return err
+}
+
+func (ks *kube2vulcand) addBackend(name string, backend *Backend) error {
+	data, err := json.Marshal(backend)
+	if err != nil {
+		return err
+	}
+	if err = ks.writeVulcandBackend(name, string(data)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ks *kube2vulcand) addBackendServer(name string, server *BackendServer) error {
+	data, err := json.Marshal(server)
+	if err != nil {
+		return err
+	}
+	if err = ks.writeVulcandBackendServer(name, string(data)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (ks *kube2vulcand) addFrontend(name string, frontend *Frontend) error {
@@ -149,6 +200,14 @@ func (ks *kube2vulcand) mutateEtcdOrDie(mutator func() error) {
 	}
 }
 
+func buildBackendIDString(namespace, name, port string) string {
+	return fmt.Sprintf("%s:%s:%s", namespace, name, port)
+}
+
+func buildBackendServerString(namespace, name, port string) string {
+	return fmt.Sprintf("http://%s.%s:%s", name, namespace, port)
+}
+
 func buildFrontendNameString(labels ...string) string {
 	var res string
 	for _, label := range labels {
@@ -161,13 +220,26 @@ func buildFrontendNameString(labels ...string) string {
 	return res
 }
 
-func buildBackendIDString(name, port string) string {
-	return fmt.Sprintf("%s:%s")
+func buildRouteString(host, path string) string {
+	return fmt.Sprintf("Host(`%s`) && Path(`%s`)", host, path)
 }
 
 // Returns a cache.ListWatch that gets all changes to ingresses.
 func createIngressLW(kubeClient *kclient.Client) *kcache.ListWatch {
 	return kcache.NewListWatchFromClient(kubeClient, "ingress", kapi.NamespaceAll, kSelector.Everything())
+}
+
+// Returns a cache.ListWatch that gets all changes to services.
+func createServiceLW(kubeClient *kclient.Client) *kcache.ListWatch {
+	return kcache.NewListWatchFromClient(kubeClient, "services", kapi.NamespaceAll, kSelector.Everything())
+}
+
+type Backend struct {
+	Type string
+}
+
+type BackendServer struct {
+	URL string
 }
 
 type Frontend struct {
@@ -181,8 +253,8 @@ func (ks *kube2vulcand) newIngress(obj interface{}) {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
 				frontendName := buildFrontendNameString(ing.Name, ing.Namespace, rule.Host, path.Path)
-				backendID := buildBackendIDString(path.Backend.ServiceName, path.Backend.ServicePort.StrVal)
-				frontend := &Frontend{BackendID: backendID, Route: fmt.Sprintf("Host(`%s`) && Path(`%s`)", rule.Host, path)}
+				backendID := buildBackendIDString(ing.Namespace, path.Backend.ServiceName, path.Backend.ServicePort.StrVal)
+				frontend := &Frontend{BackendID: backendID, Route: buildRouteString(rule.Host, path.Path)}
 				ks.mutateEtcdOrDie(func() error { return ks.addFrontend(frontendName, frontend) })
 			}
 		}
@@ -221,6 +293,32 @@ func (ks *kube2vulcand) updateIngress(oldObj, newObj interface{}) {
 	// TODO: Avoid unwanted updates.
 	ks.removeIngress(oldObj)
 	ks.newIngress(newObj)
+}
+
+func (ks *kube2vulcand) newService(obj interface{}) {
+	if s, ok := obj.(*kapi.Service); ok {
+		for _, port := range s.Spec.Ports {
+			backendID := buildBackendIDString(s.Namespace, s.Name, string(port.Port))
+			ks.mutateEtcdOrDie(func() error { return ks.addBackend(backendID, &Backend{Type: backendType}) })
+			backendServer := buildBackendServerString(s.Namespace, s.Name, port.TargetPort.StrVal)
+			ks.mutateEtcdOrDie(func() error { return ks.addBackendServer(backendID, &BackendServer{URL: backendServer}) })
+		}
+	}
+}
+
+func (ks *kube2vulcand) removeService(obj interface{}) {
+	if s, ok := obj.(*kapi.Service); ok {
+		for _, port := range s.Spec.Ports {
+			backendID := buildBackendIDString(s.Namespace, s.Name, port.Name)
+			ks.mutateEtcdOrDie(func() error { return ks.removeBackend(backendID) })
+		}
+	}
+}
+
+func (ks *kube2vulcand) updateService(oldObj, newObj interface{}) {
+	// TODO: Avoid unwanted updates.
+	ks.removeService(oldObj)
+	ks.newService(newObj)
 }
 
 func newEtcdClient(etcdServer string) (*etcd.Client, error) {
@@ -328,6 +426,21 @@ func watchForIngress(kubeClient *kclient.Client, ks *kube2vulcand) kcache.Store 
 	return ingressStore
 }
 
+func watchForServices(kubeClient *kclient.Client, ks *kube2vulcand) kcache.Store {
+	serviceStore, serviceController := kframework.NewInformer(
+		createServiceLW(kubeClient),
+		&kapi.Service{},
+		resyncPeriod,
+		kframework.ResourceEventHandlerFuncs{
+			AddFunc:    ks.newService,
+			DeleteFunc: ks.removeService,
+			UpdateFunc: ks.updateService,
+		},
+	)
+	go serviceController.Run(util.NeverStop)
+	return serviceStore
+}
+
 func getHash(text string) string {
 	h := fnv.New32a()
 	h.Write([]byte(text))
@@ -355,7 +468,8 @@ func main() {
 		glog.Fatalf("Failed to create a kubernetes client: %v", err)
 	}
 
-	ks.servicesStore = watchForIngress(kubeClient, &ks)
+	ks.ingressStore = watchForIngress(kubeClient, &ks)
+	ks.servicesStore = watchForServices(kubeClient, &ks)
 
 	select {}
 }

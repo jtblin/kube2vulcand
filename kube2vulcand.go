@@ -88,9 +88,9 @@ type kube2vulcand struct {
 }
 
 type vulcandEndpoint interface {
-	basePath(name string) string
+	basePath(ID string) string
 	endpointType() string
-	path(name string) string
+	path(ID string) string
 }
 
 type backend struct {
@@ -101,12 +101,12 @@ func (b *backend) endpointType() string {
 	return "backend"
 }
 
-func (b *backend) basePath(name string) string {
-	return vulcandPath("backends", name)
+func (b *backend) basePath(ID string) string {
+	return vulcandPath("backends", ID)
 }
 
-func (b *backend) path(name string) string {
-	return vulcandPath("backends", name, "backend")
+func (b *backend) path(ID string) string {
+	return vulcandPath("backends", ID, "backend")
 }
 
 type frontend struct {
@@ -119,12 +119,12 @@ func (f *frontend) endpointType() string {
 	return "frontend"
 }
 
-func (f *frontend) basePath(name string) string {
-	return vulcandPath("frontends", name)
+func (f *frontend) basePath(ID string) string {
+	return vulcandPath("frontends", ID)
 }
 
-func (f *frontend) path(name string) string {
-	return vulcandPath("frontends", name, "frontend")
+func (f *frontend) path(ID string) string {
+	return vulcandPath("frontends", ID, "frontend")
 }
 
 type server struct {
@@ -135,49 +135,49 @@ func (bs *server) endpointType() string {
 	return "backend server"
 }
 
-func (bs *server) basePath(name string) string {
-	return vulcandPath("backends", name)
+func (bs *server) basePath(ID string) string {
+	return vulcandPath("backends", ID)
 }
 
-func (bs *server) path(name string) string {
-	return vulcandPath("backends", name, "servers", "server")
+func (bs *server) path(ID string) string {
+	return vulcandPath("backends", ID, "servers", "server")
 }
 
 func vulcandPath(keys ...string) string {
 	return strings.Join(append([]string{etcdKey}, keys...), "/")
 }
 
-func (kv *kube2vulcand) writeVulcandEndpoint(name string, data string) error {
+func (kv *kube2vulcand) writeVulcandEndpoint(ID string, data string) error {
 	// Set with no TTL, and hope that kubernetes events are accurate.
-	_, err := kv.etcdClient.Set(name, data, uint64(0))
+	_, err := kv.etcdClient.Set(ID, data, uint64(0))
 	return err
 }
 
 // Add 'endpoint' to etcd e.g. frontend, backend, backend server.
-func (kv *kube2vulcand) addEndpoint(name string, endpoint vulcandEndpoint) error {
+func (kv *kube2vulcand) addEndpoint(ID string, endpoint vulcandEndpoint) error {
 	data, err := json.Marshal(endpoint)
 	if err != nil {
 		return err
 	}
-	glog.V(1).Infof("Setting %s: %s -> %v", endpoint.endpointType(), name, endpoint)
-	if err = kv.writeVulcandEndpoint(endpoint.path(name), string(data)); err != nil {
+	glog.V(1).Infof("Setting %s: %s -> %v", endpoint.endpointType(), ID, endpoint)
+	if err = kv.writeVulcandEndpoint(endpoint.path(ID), string(data)); err != nil {
 		return err
 	}
 	return nil
 }
 
 // Removes 'endpoint' from etcd e.g. frontend, backend, backend server.
-func (kv *kube2vulcand) removeEndpoint(name string, endpoint vulcandEndpoint) error {
-	glog.V(1).Infof("Removing %s %s from vulcand", endpoint.endpointType(), name)
-	resp, err := kv.etcdClient.RawGet(endpoint.basePath(name), false, true)
+func (kv *kube2vulcand) removeEndpoint(ID string, endpoint vulcandEndpoint) error {
+	glog.V(1).Infof("Removing %s %s from vulcand", endpoint.endpointType(), ID)
+	resp, err := kv.etcdClient.RawGet(endpoint.basePath(ID), false, true)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		glog.V(1).Infof("%s %q does not exist in etcd", endpoint.endpointType(), name)
+		glog.V(1).Infof("%s %q does not exist in etcd", endpoint.endpointType(), ID)
 		return nil
 	}
-	_, err = kv.etcdClient.Delete(endpoint.basePath(name), true)
+	_, err = kv.etcdClient.Delete(endpoint.basePath(ID), true)
 	return err
 }
 
@@ -202,8 +202,8 @@ func (kv *kube2vulcand) mutateEtcdOrDie(mutator func() error) {
 	}
 }
 
-func shortID(name, value string) string {
-	return fmt.Sprintf("%s-%s", name, getHash(value))
+func shortID(ID, value string) string {
+	return fmt.Sprintf("%s-%s", ID, getHash(value))
 }
 
 func getHash(text string) string {
@@ -212,16 +212,16 @@ func getHash(text string) string {
 	return fmt.Sprintf("%x", h.Sum32())
 }
 
-func buildBackendIDString(protocol, name, namespace, port string) string {
-	return shortID(name, fmt.Sprintf("%s:%s:%s:%s", protocol, name, namespace, port))
+func buildBackendIDString(protocol, ID, namespace, port string) string {
+	return shortID(ID, fmt.Sprintf("%s:%s:%s:%s", protocol, ID, namespace, port))
 }
 
-func buildBackendServerURLString(name, namespace, port string) string {
-	return fmt.Sprintf("http://%s.%s:%s", name, namespace, port)
+func buildBackendServerURLString(ID, namespace, port string) string {
+	return fmt.Sprintf("http://%s.%s:%s", ID, namespace, port)
 }
 
-func buildFrontendNameString(protocol, name, namespace, host, path string) string {
-	return shortID(name, fmt.Sprintf("%s:%s:%s:%s:%s", protocol, name, namespace, host, path))
+func buildFrontendIDString(protocol, ID, namespace, host, path string) string {
+	return shortID(ID, fmt.Sprintf("%s:%s:%s:%s:%s", protocol, ID, namespace, host, path))
 }
 
 func buildRouteString(host, path string) string {
@@ -238,7 +238,7 @@ func (kv *kube2vulcand) newIngress(obj interface{}) {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
 				port := strconv.Itoa(path.Backend.ServicePort.IntVal)
-				frontendID := buildFrontendNameString(
+				frontendID := buildFrontendIDString(
 					frontendType, ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path),
 				)
 				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace, port)
@@ -263,7 +263,7 @@ func (kv *kube2vulcand) removeIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				frontendID := buildFrontendNameString(frontendType, ing.Name, ing.Namespace, rule.Host,
+				frontendID := buildFrontendIDString(frontendType, ing.Name, ing.Namespace, rule.Host,
 					url.QueryEscape(path.Path))
 				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace,
 					strconv.Itoa(path.Backend.ServicePort.IntVal))

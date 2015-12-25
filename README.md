@@ -31,9 +31,8 @@ For now, this is expected to be run in a pod alongside the etcd and vulcand cont
 
 This will start ectd, vulcand, and build the kube2vulcand image:
 
-    make build
     export KUBE_CA_PATH=~/path/to/kube-ca # optional, based on your k8s config
-    docker-compose up --force-recreate
+    make docker-run
 
 ## Deploy to kubernetes
 

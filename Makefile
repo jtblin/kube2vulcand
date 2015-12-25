@@ -1,3 +1,4 @@
+KUBE_CA_PATH := $(KUBE_CA_PATH)
 VERSION_VAR := main.VERSION
 REPO_VERSION := $(shell git describe --always --dirty --tags)
 GOBUILD_VERSION_ARGS := -ldflags "-X $(VERSION_VAR)=$(REPO_VERSION)"
@@ -49,6 +50,10 @@ release: docker
 	docker push $(IMAGE_NAME):$(GIT_HASH)
 	docker tag -f $(IMAGE_NAME):$(GIT_HASH) $(IMAGE_NAME):latest
 	docker push $(IMAGE_NAME):latest
+
+run-docker: cross
+	docker-compose build
+	docker-compose up --force-recreate
 
 version:
 	@echo $(REPO_VERSION)

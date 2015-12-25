@@ -24,6 +24,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"net/url"
 	"os"
@@ -201,8 +202,18 @@ func (kv *kube2vulcand) mutateEtcdOrDie(mutator func() error) {
 	}
 }
 
+func shortID(name, value string) string {
+	return fmt.Sprintf("%s-%s", name, getHash(value))
+}
+
+func getHash(text string) string {
+	h := fnv.New32a()
+	h.Write([]byte(text))
+	return fmt.Sprintf("%x", h.Sum32())
+}
+
 func buildBackendIDString(protocol, name, namespace, port string) string {
-	return fmt.Sprintf("%s:%s:%s:%s", protocol, name, namespace, port)
+	return shortID(name, fmt.Sprintf("%s:%s:%s:%s", protocol, name, namespace, port))
 }
 
 func buildBackendServerURLString(name, namespace, port string) string {
@@ -210,7 +221,7 @@ func buildBackendServerURLString(name, namespace, port string) string {
 }
 
 func buildFrontendNameString(protocol, name, namespace, host, path string) string {
-	return fmt.Sprintf("%s:%s:%s:%s:%s", protocol, name, namespace, host, path)
+	return shortID(name, fmt.Sprintf("%s:%s:%s:%s:%s", protocol, name, namespace, host, path))
 }
 
 func buildRouteString(host, path string) string {
@@ -386,6 +397,7 @@ func main() {
 		fmt.Println(VERSION)
 		os.Exit(0)
 	}
+	glog.Infof("Running version %s", VERSION)
 
 	kv := kube2vulcand{etcdMutationTimeout: *argEtcdMutationTimeout}
 

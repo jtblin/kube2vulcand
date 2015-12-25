@@ -78,118 +78,102 @@ type kube2vulcand struct {
 	etcdClient etcdClient
 	// Etcd mutation timeout.
 	etcdMutationTimeout time.Duration
-	// A cache that contains all the endpoints in the system.
+	// A cache that contains all the ingresses in the system.
 	ingressesStore kcache.Store
-	// A cache that contains all the servicess in the system.
-	servicesStore kcache.Store
 }
 
-func backendPath(name string) string {
-	return vulcandPath("backends", name, "backend")
+type vulcandEndpoint interface {
+	basePath(name string) string
+	endpointType() string
+	path(name string) string
 }
 
-func backendBasePath(name string) string {
+type backend struct {
+	Type string
+}
+
+func (b *backend) endpointType() string {
+	return "backend"
+}
+
+func (b *backend) basePath(name string) string {
 	return vulcandPath("backends", name)
 }
 
-func backendServerPath(name string) string {
-	return vulcandPath("backends", name, "servers", "server")
+func (b *backend) path(name string) string {
+	return vulcandPath("backends", name, "backend")
 }
 
-func frontendPath(name string) string {
+type frontend struct {
+	BackendID string `json:"BackendId"`
+	Route     string
+	Type      string
+}
+
+func (f *frontend) endpointType() string {
+	return "frontend"
+}
+
+func (f *frontend) basePath(name string) string {
+	return vulcandPath("frontends", name)
+}
+
+func (f *frontend) path(name string) string {
 	return vulcandPath("frontends", name, "frontend")
 }
 
-func frontendBasePath(name string) string {
-	return vulcandPath("frontends", name)
+type server struct {
+	URL string
+}
+
+func (bs *server) endpointType() string {
+	return "backend server"
+}
+
+func (bs *server) basePath(name string) string {
+	return vulcandPath("backends", name)
+}
+
+func (bs *server) path(name string) string {
+	return vulcandPath("backends", name, "servers", "server")
 }
 
 func vulcandPath(keys ...string) string {
 	return strings.Join(append([]string{etcdKey}, keys...), "/")
 }
 
-func (kv *kube2vulcand) writeVulcandBackend(name string, data string) error {
+func (kv *kube2vulcand) writeVulcandEndpoint(name string, data string) error {
 	// Set with no TTL, and hope that kubernetes events are accurate.
-	_, err := kv.etcdClient.Set(backendPath(name), data, uint64(0))
+	_, err := kv.etcdClient.Set(name, data, uint64(0))
 	return err
 }
 
-func (kv *kube2vulcand) writeVulcandBackendServer(name string, data string) error {
-	// Set with no TTL, and hope that kubernetes events are accurate.
-	_, err := kv.etcdClient.Set(backendServerPath(name), data, uint64(0))
-	return err
+// Add 'endpoint' to etcd e.g. frontend, backend, backend server.
+func (kv *kube2vulcand) addEndpoint(name string, endpoint vulcandEndpoint) error {
+	data, err := json.Marshal(endpoint)
+	if err != nil {
+		return err
+	}
+	glog.V(1).Infof("Setting %s: %s -> %v", endpoint.endpointType(), name, endpoint)
+	if err = kv.writeVulcandEndpoint(endpoint.path(name), string(data)); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (kv *kube2vulcand) writeVulcandFrontend(name string, data string) error {
-	// Set with no TTL, and hope that kubernetes events are accurate.
-	_, err := kv.etcdClient.Set(frontendPath(name), data, uint64(0))
-	return err
-}
-
-// Removes 'backend' from etcd.
-func (kv *kube2vulcand) removeBackend(name string) error {
-	glog.V(1).Infof("Removing backend %s from vulcand", name)
-	resp, err := kv.etcdClient.RawGet(backendBasePath(name), false, true)
+// Removes 'endpoint' from etcd e.g. frontend, backend, backend server.
+func (kv *kube2vulcand) removeEndpoint(name string, endpoint vulcandEndpoint) error {
+	glog.V(1).Infof("Removing %s %s from vulcand", endpoint.endpointType(), name)
+	resp, err := kv.etcdClient.RawGet(endpoint.basePath(name), false, true)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		glog.V(1).Infof("Backend %q does not exist in etcd", name)
+		glog.V(1).Infof("%s %q does not exist in etcd", endpoint.endpointType(), name)
 		return nil
 	}
-	_, err = kv.etcdClient.Delete(backendBasePath(name), true)
+	_, err = kv.etcdClient.Delete(endpoint.basePath(name), true)
 	return err
-}
-
-// Removes 'frontend' from etcd.
-func (kv *kube2vulcand) removeFrontend(name string) error {
-	glog.V(1).Infof("Removing frontend %s from vulcand", name)
-	resp, err := kv.etcdClient.RawGet(frontendBasePath(name), false, true)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		glog.V(1).Infof("Frontend %q does not exist in etcd", name)
-		return nil
-	}
-	_, err = kv.etcdClient.Delete(frontendBasePath(name), true)
-	return err
-}
-
-func (kv *kube2vulcand) addBackend(name string, backend *Backend) error {
-	data, err := json.Marshal(backend)
-	if err != nil {
-		return err
-	}
-	glog.V(1).Infof("Setting backend: %s -> %v", name, backend)
-	if err = kv.writeVulcandBackend(name, string(data)); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (kv *kube2vulcand) addBackendServer(name string, server *BackendServer) error {
-	data, err := json.Marshal(server)
-	if err != nil {
-		return err
-	}
-	glog.V(1).Infof("Setting backend server: %s -> %v", name, server)
-	if err = kv.writeVulcandBackendServer(name, string(data)); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (kv *kube2vulcand) addFrontend(name string, frontend *Frontend) error {
-	data, err := json.Marshal(frontend)
-	if err != nil {
-		return err
-	}
-	glog.V(1).Infof("Setting frontend: %s -> %v", name, frontend)
-	if err = kv.writeVulcandFrontend(name, string(data)); err != nil {
-		return err
-	}
-	return nil
 }
 
 // Implements retry logic for arbitrary mutator. Crashes after retrying for
@@ -203,7 +187,8 @@ func (kv *kube2vulcand) mutateEtcdOrDie(mutator func() error) {
 		default:
 			if err := mutator(); err != nil {
 				delay := 50 * time.Millisecond
-				glog.V(1).Infof("Failed to mutate etcd using mutator: %v due to: %v. Will retry in: %v", mutator, err, delay)
+				glog.V(1).Infof("Failed to mutate etcd using mutator: %v due to: %v. Will retry in: %v",
+					mutator, err, delay)
 				time.Sleep(delay)
 			} else {
 				return
@@ -233,36 +218,26 @@ func createIngressLW(kubeClient *kclient.ExtensionsClient) *kcache.ListWatch {
 	return kcache.NewListWatchFromClient(kubeClient, "ingresses", kapi.NamespaceAll, kSelector.Everything())
 }
 
-type Backend struct {
-	Type string
-}
-
-type BackendServer struct {
-	URL string
-}
-
-type Frontend struct {
-	BackendID string `json:"BackendId"`
-	Route     string
-	Type      string
-}
-
 func (kv *kube2vulcand) newIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				frontendID := buildFrontendNameString(frontendType, ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path))
-				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace, strconv.Itoa(path.Backend.ServicePort.IntVal))
-				frontend := &Frontend{BackendID: backendID, Route: buildRouteString(rule.Host, path.Path), Type: frontendType}
-				backendServerURL := buildBackendServerURLString(path.Backend.ServiceName, ing.Namespace, strconv.Itoa(path.Backend.ServicePort.IntVal))
+				port := strconv.Itoa(path.Backend.ServicePort.IntVal)
+				frontendID := buildFrontendNameString(
+					frontendType, ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path),
+				)
+				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace, port)
+				serverURL := buildBackendServerURLString(path.Backend.ServiceName, ing.Namespace, port)
 				kv.mutateEtcdOrDie(func() error {
-					if err := kv.addBackend(backendID, &Backend{Type: backendType}); err != nil {
+					if err := kv.addEndpoint(backendID, &backend{Type: backendType}); err != nil {
 						return err
 					}
-					if err := kv.addBackendServer(backendID, &BackendServer{URL: backendServerURL}); err != nil {
+					if err := kv.addEndpoint(backendID, &server{URL: serverURL}); err != nil {
 						return err
 					}
-					return kv.addFrontend(frontendID, frontend)
+					return kv.addEndpoint(frontendID, &frontend{
+						BackendID: backendID, Route: buildRouteString(rule.Host, path.Path), Type: frontendType,
+					})
 				})
 			}
 		}
@@ -273,13 +248,15 @@ func (kv *kube2vulcand) removeIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				frontendID := buildFrontendNameString(frontendType, ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path))
-				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace, strconv.Itoa(path.Backend.ServicePort.IntVal))
+				frontendID := buildFrontendNameString(frontendType, ing.Name, ing.Namespace, rule.Host,
+					url.QueryEscape(path.Path))
+				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace,
+					strconv.Itoa(path.Backend.ServicePort.IntVal))
 				kv.mutateEtcdOrDie(func() error {
-					if err := kv.removeBackend(backendID); err != nil {
+					if err := kv.removeEndpoint(frontendID, new(frontend)); err != nil {
 						return err
 					}
-					return kv.removeFrontend(frontendID)
+					return kv.removeEndpoint(backendID, new(backend))
 				})
 			}
 		}

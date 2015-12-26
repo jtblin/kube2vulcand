@@ -5,7 +5,7 @@ etcd:
   hostname: etcd
   restart: always
 kube2vulcand:
-  build: build/.
+  build: .
   entrypoint: kube2vulcand --kubecfg-file=/etc/kubernetes/config --etcd-server=http://etcd:4001 --v=1
   environment:
     CERT_PATH:
@@ -24,7 +24,7 @@ vulcand:
     - "8181:8181"
     - "8182:8182"
   restart: always
-alpine:
+curl:
   image: jtblin/curl
   entrypoint: /bin/sh -c "while :; do sleep 60; done"
   links:

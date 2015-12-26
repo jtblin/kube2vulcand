@@ -67,7 +67,7 @@ spec:
         - name: etcd-storage
           mountPath: /var/etcd/data
       - name: kube2vulcand
-        image: jtblin/kube2vulcand:e4671a1
+        image: jtblin/kube2vulcand:7dff105
         resources:
           # keep request = limit to keep this container in guaranteed class
           limits:

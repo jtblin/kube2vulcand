@@ -29,7 +29,7 @@ junit-test: build
 	go test -v | go-junit-report > test-report.xml
 
 check:
-	gometalinter ./...
+	gometalinter --deadline=10s ./...
 
 run: build
 	./build/bin/kube2vulcand --kubecfg-file=`ls ~/.kube/config` --v=1
@@ -40,20 +40,20 @@ watch:
 commit-hook:
 	cp dev/commit-hook.sh .git/hooks/pre-commit
 
-cross: check test
+cross:
 	CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -X $(VERSION_VAR)=$(REPO_VERSION)" -a -installsuffix cgo -o build/bin/$(BINARY_NAME)-linux .
 
 docker: cross
 	cd build && docker build -t $(IMAGE_NAME):$(GIT_HASH) .
 
-release: docker
+release: check test docker
 	docker push $(IMAGE_NAME):$(GIT_HASH)
 	docker tag -f $(IMAGE_NAME):$(GIT_HASH) $(IMAGE_NAME):latest
 	docker push $(IMAGE_NAME):latest
 
 run-docker: cross
-	docker-compose build
-	docker-compose up --force-recreate
+	docker-compose -f build/docker-compose.yml build
+	docker-compose -f build/docker-compose.yml up --force-recreate
 
 version:
 	@echo $(REPO_VERSION)

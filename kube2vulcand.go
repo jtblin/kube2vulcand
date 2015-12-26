@@ -29,22 +29,13 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
-	etcd "github.com/coreos/go-etcd/etcd"
 	"github.com/golang/glog"
 	"github.com/spf13/pflag"
-	kapi "k8s.io/kubernetes/pkg/api"
 	kextensions "k8s.io/kubernetes/pkg/apis/extensions"
 	kcache "k8s.io/kubernetes/pkg/client/cache"
-	kclient "k8s.io/kubernetes/pkg/client/unversioned"
-	kclientcmd "k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
-	kframework "k8s.io/kubernetes/pkg/controller/framework"
-	kSelector "k8s.io/kubernetes/pkg/fields"
-	etcdstorage "k8s.io/kubernetes/pkg/storage/etcd"
 	"k8s.io/kubernetes/pkg/util"
-	"k8s.io/kubernetes/pkg/util/wait"
 )
 
 var (
@@ -72,12 +63,6 @@ const (
 	resyncPeriod = 30 * time.Minute
 )
 
-type etcdClient interface {
-	Set(path, value string, ttl uint64) (*etcd.Response, error)
-	RawGet(key string, sort, recursive bool) (*etcd.RawResponse, error)
-	Delete(path string, recursive bool) (*etcd.Response, error)
-}
-
 type kube2vulcand struct {
 	// Etcd client.
 	etcdClient etcdClient
@@ -87,97 +72,37 @@ type kube2vulcand struct {
 	ingressesStore kcache.Store
 }
 
-type vulcandEndpoint interface {
-	basePath(ID string) string
-	endpointType() string
-	path(ID string) string
-}
-
-type backend struct {
-	Type string
-}
-
-func (b *backend) endpointType() string {
-	return "backend"
-}
-
-func (b *backend) basePath(ID string) string {
-	return vulcandPath("backends", ID)
-}
-
-func (b *backend) path(ID string) string {
-	return vulcandPath("backends", ID, "backend")
-}
-
-type frontend struct {
-	BackendID string `json:"BackendId"`
-	Route     string
-	Type      string
-}
-
-func (f *frontend) endpointType() string {
-	return "frontend"
-}
-
-func (f *frontend) basePath(ID string) string {
-	return vulcandPath("frontends", ID)
-}
-
-func (f *frontend) path(ID string) string {
-	return vulcandPath("frontends", ID, "frontend")
-}
-
-type server struct {
-	URL string
-}
-
-func (bs *server) endpointType() string {
-	return "backend server"
-}
-
-func (bs *server) basePath(ID string) string {
-	return vulcandPath("backends", ID)
-}
-
-func (bs *server) path(ID string) string {
-	return vulcandPath("backends", ID, "servers", "server")
-}
-
-func vulcandPath(keys ...string) string {
-	return strings.Join(append([]string{etcdKey}, keys...), "/")
-}
-
 func (kv *kube2vulcand) writeVulcandEndpoint(ID string, data string) error {
 	// Set with no TTL, and hope that kubernetes events are accurate.
 	_, err := kv.etcdClient.Set(ID, data, uint64(0))
 	return err
 }
 
-// Add 'endpoint' to etcd e.g. frontend, backend, backend server.
-func (kv *kube2vulcand) addEndpoint(ID string, endpoint vulcandEndpoint) error {
-	data, err := json.Marshal(endpoint)
+// Add 'engine' to etcd e.g. frontend, backend, backend server.
+func (kv *kube2vulcand) addEngine(ID string, engine vulcandEngine) error {
+	data, err := json.Marshal(engine)
 	if err != nil {
 		return err
 	}
-	glog.V(1).Infof("Setting %s: %s -> %v", endpoint.endpointType(), ID, endpoint)
-	if err = kv.writeVulcandEndpoint(endpoint.path(ID), string(data)); err != nil {
+	glog.V(1).Infof("Setting %s: %s -> %v", engine.engineType(), ID, engine)
+	if err = kv.writeVulcandEndpoint(engine.path(ID), string(data)); err != nil {
 		return err
 	}
 	return nil
 }
 
-// Removes 'endpoint' from etcd e.g. frontend, backend, backend server.
-func (kv *kube2vulcand) removeEndpoint(ID string, endpoint vulcandEndpoint) error {
-	glog.V(1).Infof("Removing %s %s from vulcand", endpoint.endpointType(), ID)
-	resp, err := kv.etcdClient.RawGet(endpoint.basePath(ID), false, true)
+// Removes 'engine' from etcd e.g. frontend, backend, backend server.
+func (kv *kube2vulcand) removeEngine(ID string, engine vulcandEngine) error {
+	glog.V(1).Infof("Removing %s %s from vulcand", engine.engineType(), ID)
+	resp, err := kv.etcdClient.RawGet(engine.basePath(ID), false, true)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		glog.V(1).Infof("%s %q does not exist in etcd", endpoint.endpointType(), ID)
+		glog.V(1).Infof("%s %q does not exist in etcd", engine.engineType(), ID)
 		return nil
 	}
-	_, err = kv.etcdClient.Delete(endpoint.basePath(ID), true)
+	_, err = kv.etcdClient.Delete(engine.basePath(ID), true)
 	return err
 }
 
@@ -208,7 +133,9 @@ func shortID(ID, value string) string {
 
 func getHash(text string) string {
 	h := fnv.New32a()
-	h.Write([]byte(text))
+	if _, err := h.Write([]byte(text)); err != nil {
+		return text
+	}
 	return fmt.Sprintf("%x", h.Sum32())
 }
 
@@ -228,11 +155,6 @@ func buildRouteString(host, path string) string {
 	return fmt.Sprintf("Host(`%s`) && Path(`%s`)", host, path)
 }
 
-// Returns a cache.ListWatch that gets all changes to ingresses.
-func createIngressLW(kubeClient *kclient.ExtensionsClient) *kcache.ListWatch {
-	return kcache.NewListWatchFromClient(kubeClient, "ingresses", kapi.NamespaceAll, kSelector.Everything())
-}
-
 func (kv *kube2vulcand) newIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
@@ -243,16 +165,19 @@ func (kv *kube2vulcand) newIngress(obj interface{}) {
 				)
 				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace, port)
 				serverURL := buildBackendServerURLString(path.Backend.ServiceName, ing.Namespace, port)
+				route := buildRouteString(rule.Host, path.Path)
+				if !validateRoute(route) {
+					glog.Errorf("Invalid route: %v", route)
+					continue
+				}
 				kv.mutateEtcdOrDie(func() error {
-					if err := kv.addEndpoint(backendID, &backend{Type: backendType}); err != nil {
+					if err := kv.addEngine(backendID, newBackend(backendID)); err != nil {
 						return err
 					}
-					if err := kv.addEndpoint(backendID, &server{URL: serverURL}); err != nil {
+					if err := kv.addEngine(backendID, newServer(serverURL)); err != nil {
 						return err
 					}
-					return kv.addEndpoint(frontendID, &frontend{
-						BackendID: backendID, Route: buildRouteString(rule.Host, path.Path), Type: frontendType,
-					})
+					return kv.addEngine(frontendID, newFrontend(frontendID, backendID, route))
 				})
 			}
 		}
@@ -268,10 +193,10 @@ func (kv *kube2vulcand) removeIngress(obj interface{}) {
 				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace,
 					strconv.Itoa(path.Backend.ServicePort.IntVal))
 				kv.mutateEtcdOrDie(func() error {
-					if err := kv.removeEndpoint(frontendID, new(frontend)); err != nil {
+					if err := kv.removeEngine(frontendID, new(frontend)); err != nil {
 						return err
 					}
-					return kv.removeEndpoint(backendID, new(backend))
+					return kv.removeEngine(backendID, new(backend))
 				})
 			}
 		}
@@ -282,109 +207,6 @@ func (kv *kube2vulcand) updateIngress(oldObj, newObj interface{}) {
 	// TODO: Avoid unwanted updates.
 	kv.removeIngress(oldObj)
 	kv.newIngress(newObj)
-}
-
-func newEtcdClient(etcdServer string) (*etcd.Client, error) {
-	var (
-		client *etcd.Client
-		err    error
-	)
-	for attempt := 1; attempt <= maxConnectAttempts; attempt++ {
-		if _, err = etcdstorage.GetEtcdVersion(etcdServer); err == nil {
-			break
-		}
-		if attempt == maxConnectAttempts {
-			break
-		}
-		glog.Infof("[Attempt: %d] Attempting access to etcd after 5 second sleep", attempt)
-		time.Sleep(5 * time.Second)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to etcd server: %v, error: %v", etcdServer, err)
-	}
-	glog.Infof("Etcd server found: %v", etcdServer)
-
-	// loop until we have > 0 machines && machines[0] != ""
-	poll, timeout := 1*time.Second, 10*time.Second
-	if err := wait.Poll(poll, timeout, func() (bool, error) {
-		if client = etcd.NewClient([]string{etcdServer}); client == nil {
-			return false, fmt.Errorf("etcd.NewClient returned nil")
-		}
-		client.SyncCluster()
-		machines := client.GetCluster()
-		if len(machines) == 0 || len(machines[0]) == 0 {
-			return false, nil
-		}
-		return true, nil
-	}); err != nil {
-		return nil, fmt.Errorf("Timed out after %s waiting for at least 1 synchronized etcd server in the cluster. Error: %v", timeout, err)
-	}
-	return client, nil
-}
-
-func expandKubeMasterURL() (string, error) {
-	parsedURL, err := url.Parse(os.ExpandEnv(*argKubeMasterURL))
-	if err != nil {
-		return "", fmt.Errorf("failed to parse --kube_master_url %s - %v", *argKubeMasterURL, err)
-	}
-	if parsedURL.Scheme == "" || parsedURL.Host == "" || parsedURL.Host == ":" {
-		return "", fmt.Errorf("invalid --kube_master_url specified %s", *argKubeMasterURL)
-	}
-	return parsedURL.String(), nil
-}
-
-// TODO: evaluate using pkg/client/clientcmd
-func newKubeClient() (*kclient.Client, error) {
-	var (
-		config    *kclient.Config
-		err       error
-		masterURL string
-	)
-	// If the user specified --kube_master_url, expand env vars and verify it.
-	if *argKubeMasterURL != "" {
-		masterURL, err = expandKubeMasterURL()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if masterURL != "" && *argKubecfgFile == "" {
-		// Only --kube_master_url was provided.
-		config = &kclient.Config{Host: masterURL}
-	} else {
-		// We either have:
-		//  1) --kube_master_url and --kubecfg_file
-		//  2) just --kubecfg_file
-		//  3) neither flag
-		// In any case, the logic is the same.  If (3), this will automatically
-		// fall back on the service account token.
-		overrides := &kclientcmd.ConfigOverrides{}
-		overrides.ClusterInfo.Server = masterURL                                     // might be "", but that is OK
-		rules := &kclientcmd.ClientConfigLoadingRules{ExplicitPath: *argKubecfgFile} // might be "", but that is OK
-		if config, err = kclientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig(); err != nil {
-			return nil, err
-		}
-	}
-
-	config.Version = k8sAPIVersion
-	glog.Infof("Using %s for kubernetes master", config.Host)
-	glog.Infof("Using kubernetes API %s", config.Version)
-	return kclient.New(config)
-}
-
-func watchForIngresses(kubeClient *kclient.ExtensionsClient, kv *kube2vulcand) kcache.Store {
-	ingressStore, ingressController := kframework.NewInformer(
-		createIngressLW(kubeClient),
-		&kextensions.Ingress{},
-		resyncPeriod,
-		kframework.ResourceEventHandlerFuncs{
-			AddFunc:    kv.newIngress,
-			DeleteFunc: kv.removeIngress,
-			UpdateFunc: kv.updateIngress,
-		},
-	)
-	go ingressController.Run(util.NeverStop)
-	return ingressStore
 }
 
 func main() {

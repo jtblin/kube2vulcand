@@ -185,9 +185,7 @@ func (kv *kube2vulcand) removeIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				fmt.Printf("Host: %s\n", rule.Host)
 				frontendID := buildFrontendIDString(frontendType, ing.Name, ing.Namespace, rule.Host, path.Path)
-				fmt.Printf("frontendID: %s\n", frontendID)
 				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace,
 					strconv.Itoa(path.Backend.ServicePort.IntVal))
 				kv.mutateEtcdOrDie(func() error {

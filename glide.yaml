@@ -1,0 +1,29 @@
+package: github.com/jtblin/kube2vulcand
+import:
+- package: github.com/coreos/go-etcd
+  version: 003851be7bb0694fe3cc457a49529a19388ee7cf
+  subpackages:
+  - /etcd
+- package: github.com/golang/glog
+  version: fca8c8854093a154ff1eb580aae10276ad6b1b5f
+- package: github.com/spf13/pflag
+  version: 7f60f83a2c81bc3c3c0d5297f61ddfa68da9d3b7
+- package: github.com/vulcand/route
+  version: cb89d787ddbb1c5849a7ac9f79004c1fd12a4a32
+- package: github.com/vulcand/vulcand
+  version: 85c983be26ebd707fe3938f2c9d87f565f792440
+  subpackages:
+  - /engine
+- package: k8s.io/kubernetes
+  version: 6a81b50c7e97bbe0ade075de55ab4fa34f049dc2
+  subpackages:
+  - /pkg/api
+  - pkg/apis/extensions
+  - pkg/client/cache
+  - pkg/client/unversioned
+  - pkg/client/unversioned/clientcmd
+  - pkg/controller/framework
+  - pkg/fields
+  - pkg/storage/etcd
+  - pkg/util
+  - pkg/util/wait

@@ -18,7 +18,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"path"
 	"strings"
@@ -37,6 +36,8 @@ import (
 	"k8s.io/kubernetes/pkg/util"
 )
 
+const basePath = "/vulcand"
+
 type fakeEtcdClient struct {
 	writes map[string]string
 }
@@ -47,7 +48,6 @@ func (ec *fakeEtcdClient) Set(key, value string, ttl uint64) (*etcd.Response, er
 }
 
 func (ec *fakeEtcdClient) Delete(key string, recursive bool) (*etcd.Response, error) {
-	fmt.Printf("Delete key %s recursive %v\n", key, recursive)
 	for p := range ec.writes {
 		if (recursive && strings.HasPrefix(p, key)) || (!recursive && p == key) {
 			delete(ec.writes, p)
@@ -82,13 +82,6 @@ func (ec *fakeEtcdClient) Get(key string) []string {
 	}
 	return values
 }
-
-const (
-	testDomain       = "cluster.local."
-	basePath         = "/vulcand"
-	serviceSubDomain = "svc"
-	podSubDomain     = "pod"
-)
 
 func newKube2Vulcand(ec etcdClient) *kube2vulcand {
 	return &kube2vulcand{
@@ -148,9 +141,7 @@ func assertServerEntryInEtcd(t *testing.T, ec *fakeEtcdClient, backendID, expect
 
 func assertFrontendEntryInEtcd(t *testing.T, ec *fakeEtcdClient, frontendID, expectedBackendID, expectedType, expectedRoute string) {
 	key := getEtcdPathForFrontend(frontendID)
-	fmt.Printf("key value: %s\n", key)
 	values := ec.Get(key)
-	fmt.Printf("etcd value: %+v\n", values)
 	require.True(t, len(values) > 0, "entry not found.")
 	actualFrontend, err := getFrontendFromString(values[0])
 	require.NoError(t, err)
@@ -205,7 +196,9 @@ func TestIngress(t *testing.T) {
 	assertServerEntryInEtcd(t, ec, expectedBackendID, expectedServerURL)
 	assertFrontendEntryInEtcd(t, ec, expectedFrontendID, expectedBackendID, frontendType, expectedRoute)
 
-	assert.Len(t, ec.writes, 3)
+	// Doesn't work since glide or 1.5.2
+	//	assert.Len(t, ec.writes, 3)
+	assert.Equal(t, 3, len(ec.writes))
 
 	// update ingress
 	newIngress := newIngress(testNamespace, testIngress, "bar.example.com", "http2", testPath, intPort)
@@ -218,7 +211,10 @@ func TestIngress(t *testing.T) {
 	assertBackendEntryInEtcd(t, ec, expectedBackendID, backendType)
 	assertServerEntryInEtcd(t, ec, expectedBackendID, expectedServerURL)
 	assertFrontendEntryInEtcd(t, ec, expectedFrontendID, expectedBackendID, frontendType, expectedRoute)
-	assert.Len(t, ec.writes, 3)
+
+	// Doesn't work since glide or 1.5.2
+	//	assert.Len(t, ec.writes, 3)
+	assert.Equal(t, 3, len(ec.writes))
 
 	// Delete the ingress
 	k2v.removeIngress(&newIngress)

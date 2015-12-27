@@ -24,6 +24,8 @@ For now, this is expected to be run in a pod alongside the etcd and vulcand cont
 ## Dev
 
 * Setup the default kubernetes config file.
+* Install glide `brew install glide`
+* Download the dependencies: `make setup` 
 
 ### Locally
 

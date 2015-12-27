@@ -9,7 +9,7 @@ IMAGE_NAME := jtblin/$(BINARY_NAME)
 ARCH := linux darwin windows freebsd
 
 setup:
-	go get -v
+	glide install
 	go get -v -u github.com/githubnemo/CompileDaemon
 	go get -v -u github.com/alecthomas/gometalinter
 	gometalinter --install --update
@@ -21,7 +21,7 @@ fmt:
 	gofmt -w=true $(shell find . -type f -name '*.go' -not -path "./vendor/*")
 	goimports -w=true -d $(shell find . -type f -name '*.go' -not -path "./vendor/*")
 
-test:
+test: check
 	go test
 
 cover:

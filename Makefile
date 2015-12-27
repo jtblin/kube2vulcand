@@ -24,6 +24,11 @@ fmt:
 test:
 	go test
 
+cover:
+	go test -covermode=count -coverprofile=coverage.out
+	go tool cover -func=coverage.out
+	go tool cover -html=coverage.out
+
 junit-test: build
 	go get github.com/jstemmer/go-junit-report
 	go test -v | go-junit-report > test-report.xml

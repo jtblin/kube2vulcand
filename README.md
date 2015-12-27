@@ -1,3 +1,6 @@
+[![Build Status](https://drone.io/github.com/jtblin/kube2vulcand/status.png)](https://drone.io/github.com/jtblin/kube2vulcand/latest)
+[![Coverage Status](https://coveralls.io/repos/jtblin/kube2vulcand/badge.svg?branch=master&service=github)](https://coveralls.io/github/jtblin/kube2vulcand?branch=master)
+
 # kube2vulcand
 
 Inspired by [kube2sky](https://github.com/kubernetes/kubernetes/blob/master/cluster/addons/dns/kube2sky/kube2sky.go)

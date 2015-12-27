@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -139,16 +138,16 @@ func getHash(text string) string {
 	return fmt.Sprintf("%x", h.Sum32())
 }
 
-func buildBackendIDString(protocol, ID, namespace, port string) string {
-	return shortID(ID, fmt.Sprintf("%s:%s:%s:%s", protocol, ID, namespace, port))
+func buildBackendIDString(protocol, serviceID, namespace, port string) string {
+	return shortID(serviceID, fmt.Sprintf("%s:%s:%s:%s", protocol, serviceID, namespace, port))
 }
 
-func buildBackendServerURLString(ID, namespace, port string) string {
-	return fmt.Sprintf("http://%s.%s:%s", ID, namespace, port)
+func buildServerURLString(serviceID, namespace, port string) string {
+	return fmt.Sprintf("http://%s.%s:%s", serviceID, namespace, port)
 }
 
-func buildFrontendIDString(protocol, ID, namespace, host, path string) string {
-	return shortID(ID, fmt.Sprintf("%s:%s:%s:%s:%s", protocol, ID, namespace, host, path))
+func buildFrontendIDString(protocol, ingressID, namespace, host, path string) string {
+	return shortID(ingressID, fmt.Sprintf("%s:%s:%s:%s:%s", protocol, ingressID, namespace, host, path))
 }
 
 func buildRouteString(host, path string) string {
@@ -160,11 +159,9 @@ func (kv *kube2vulcand) newIngress(obj interface{}) {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
 				port := strconv.Itoa(path.Backend.ServicePort.IntVal)
-				frontendID := buildFrontendIDString(
-					frontendType, ing.Name, ing.Namespace, rule.Host, url.QueryEscape(path.Path),
-				)
-				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace, port)
-				serverURL := buildBackendServerURLString(path.Backend.ServiceName, ing.Namespace, port)
+				frontendID := buildFrontendIDString(frontendType, ing.Name, ing.Namespace, rule.Host, path.Path)
+				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace, strconv.Itoa(path.Backend.ServicePort.IntVal))
+				serverURL := buildServerURLString(path.Backend.ServiceName, ing.Namespace, port)
 				route := buildRouteString(rule.Host, path.Path)
 				if !validateRoute(route) {
 					glog.Errorf("Invalid route: %v", route)
@@ -188,8 +185,9 @@ func (kv *kube2vulcand) removeIngress(obj interface{}) {
 	if ing, ok := obj.(*kextensions.Ingress); ok {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				frontendID := buildFrontendIDString(frontendType, ing.Name, ing.Namespace, rule.Host,
-					url.QueryEscape(path.Path))
+				fmt.Printf("Host: %s\n", rule.Host)
+				frontendID := buildFrontendIDString(frontendType, ing.Name, ing.Namespace, rule.Host, path.Path)
+				fmt.Printf("frontendID: %s\n", frontendID)
 				backendID := buildBackendIDString(backendType, path.Backend.ServiceName, ing.Namespace,
 					strconv.Itoa(path.Backend.ServicePort.IntVal))
 				kv.mutateEtcdOrDie(func() error {

@@ -15,10 +15,12 @@ spec:
   ports:
   - name: http
     port: 8181
+    targetPort: vulcand-http
     nodePort: 30808
     protocol: TCP
   - name: api
     port: 8182
+    targetPort: vulcand-api
     protocol: TCP
     nodePort: 32033
 ---
@@ -78,6 +80,7 @@ spec:
             memory: 50Mi
         args:
         - --v=1
+        # - --kube-master-url=http://192.168.64.2:8080 # for use with kube-solo
         # command = "kube2vulcand"
       - name: vulcand
         image: jtblin/vulcand:85c983b
@@ -92,15 +95,15 @@ spec:
         args:
         # command = "/app/vulcand"
         - -etcd=http://127.0.0.1:4001
+        - -statsdAddr=kube-metrics:8125
+        - -statsdPrefix=vulcand
         ports:
         - containerPort: 8181
-          hostPort: 8181
           protocol: TCP
-          name: http
+          name: vulcand-http
         - containerPort: 8182
-          hostPort: 8182
           protocol: TCP
-          name: api
+          name: vulcand-api
         livenessProbe:
           httpGet:
             path: /v2/status

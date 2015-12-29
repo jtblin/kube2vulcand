@@ -151,7 +151,10 @@ func buildFrontendIDString(protocol, ingressID, namespace, host, path string) st
 }
 
 func buildRouteString(host, path string) string {
-	return fmt.Sprintf("Host(`%s`) && Path(`%s`)", host, path)
+	if path[len(path)-1:] == "/" {
+		path += ".*"
+	}
+	return fmt.Sprintf("Host(`%s`) && PathRegexp(`%s`)", host, path)
 }
 
 func (kv *kube2vulcand) newIngress(obj interface{}) {

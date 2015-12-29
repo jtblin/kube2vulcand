@@ -237,6 +237,6 @@ func TestBuildServerURL(t *testing.T) {
 }
 
 func TestBuildRoute(t *testing.T) {
-	expectedRoute := "Host(`name`) && Path(`/`)"
+	expectedRoute := "Host(`name`) && PathRegexp(`/.*`)"
 	assert.Equal(t, expectedRoute, buildRouteString("name", "/"))
 }

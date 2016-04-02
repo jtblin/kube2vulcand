@@ -4,6 +4,28 @@ etcd:
   entrypoint: /usr/local/bin/etcd -data-dir /var/etcd/data -listen-client-urls http://0.0.0.0:2379,http://0.0.0.0:4001 -advertise-client-urls http://etcd:2379,http://etcd:4001 -initial-cluster-token vulcand-etcd
   hostname: etcd
   restart: always
+kube2sky:
+  image: gcr.io/google_containers/kube2sky:1.11
+  entrypoint: /kube2sky -domain=cluster.local -kubecfg_file=/etc/kubernetes/config -v=2 -etcd-server=http://etcd:4001
+  environment:
+    CERT_PATH:
+  links:
+    - etcd
+  restart: always
+  volumes:
+    - ~/.kube/config:/etc/kubernetes/config:ro
+#    - ${KUBE_CA_PATH}:${KUBE_CA_PATH}:ro
+skydns:
+  image: gcr.io/google_containers/skydns:2015-10-13-8c72f8c
+  entrypoint: /skydns -machines=http://etcd:4001 -addr=0.0.0.0:53 -domain=cluster.local.
+  environment:
+    CERT_PATH:
+  links:
+    - etcd
+  ports:
+    - "53:53"
+    - "53:53/udp"
+  restart: always
 kube2vulcand:
   build: .
   entrypoint: kube2vulcand --kubecfg-file=/etc/kubernetes/config --etcd-server=http://etcd:4001 --v=1
@@ -14,19 +36,31 @@ kube2vulcand:
   restart: always
   volumes:
     - ~/.kube/config:/etc/kubernetes/config:ro
-    - ${KUBE_CA_PATH}:${KUBE_CA_PATH}:ro
+#    - ${KUBE_CA_PATH}:${KUBE_CA_PATH}:ro
 vulcand:
+  dns: skydns
+  dns_search:
+    - default.svc.cluster.local
+    - svc.cluster.local
+    - cluster.local
   entrypoint: /app/vulcand -etcd=http://etcd:4001
   image: jtblin/vulcand:85c983b
   links:
     - etcd
+    - skydns
   ports:
     - "8181:8181"
     - "8182:8182"
   restart: always
 curl:
-  image: jtblin/curl
+  dns: 172.17.0.3
+  dns_search:
+    - default.svc.cluster.local
+    - svc.cluster.local
+    - cluster.local
   entrypoint: /bin/sh -c "while :; do sleep 60; done"
+  image: jtblin/curl
   links:
     - etcd
+    - skydns
   restart: always

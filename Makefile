@@ -58,12 +58,13 @@ release: check test docker
 
 run-docker: cross
 	docker-compose -f build/docker-compose.yml build
-	docker-compose -f build/docker-compose.yml up --force-recreate
+	docker-compose -f build/docker-compose.yml -d up --force-recreate
 
 version:
 	@echo $(REPO_VERSION)
 
 clean:
+	cd build/ && docker-compose stop && docker-compose rm -f
 	rm -f build/bin/*
 	-docker rm $(docker ps -a -f 'status=exited' -q)
 	-docker rmi $(docker images -f 'dangling=true' -q)

@@ -2,21 +2,14 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: kube-metrics
-  namespace: kube-system
+  name: vulcand-metrics-tcp
   labels:
-    app: kube-metrics
-    kubernetes.io/cluster-service: "true"
-    kubernetes.io/name: "KubeMetrics"
+    name: vulcand-metrics-tcp
 spec:
-  type: NodePort
+  type: LoadBalancer
   selector:
-    app: kube-metrics
+    name: vulcand-metrics
   ports:
-  - name: statsd-udp
-    port: 8125
-    targetPort: stastd-udp
-    protocol: UDP
   - name: stastd-tcp
     port: 8126
     targetPort: stastd-tcp
@@ -37,16 +30,29 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: kube-lb
-  namespace: kube-system
+  name: vulcand-metrics-udp
   labels:
-    app: kube-lb
-    kubernetes.io/cluster-service: "true"
-    kubernetes.io/name: "KubeLoadBalancer"
+    name: vulcand-metrics-udp
 spec:
   type: LoadBalancer
   selector:
-    app: kube-lb
+    name: vulcand-metrics
+  ports:
+  - name: statsd-udp
+    port: 8125
+    targetPort: stastd-udp
+    protocol: UDP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vulcand-lb
+  labels:
+    name: vulcand-lb
+spec:
+  type: LoadBalancer
+  selector:
+    name: vulcand-lb
   ports:
   - name: http
     port: 80
@@ -60,23 +66,17 @@ spec:
 apiVersion: v1
 kind: ReplicationController
 metadata:
-  name: kube-metrics
-  namespace: kube-system
+  name: vulcand-metrics
   labels:
-    app: kube-metrics
-    version: v1
-    kubernetes.io/cluster-service: "true"
+    name: vulcand-metrics
 spec:
   replicas: 1
   selector:
-    app: kube-metrics
-    version: v1
+    name: vulcand-metrics
   template:
     metadata:
       labels:
-        app: kube-metrics
-        version: v1
-        kubernetes.io/cluster-service: "true"
+        name: vulcand-metrics
     spec:
       containers:
       - name: statsd
@@ -138,19 +138,14 @@ spec:
 apiVersion: extensions/v1beta1
 kind: DaemonSet
 metadata:
-  name: kube-lb
-  namespace: kube-system
+  name: vulcand-lb
   labels:
-    app: kube-lb
-    version: v1
-    kubernetes.io/cluster-service: "true"
+    name: vulcand-lb
 spec:
   template:
     metadata:
       labels:
-        app: kube-lb
-        version: v1
-        kubernetes.io/cluster-service: "true"
+        name: vulcand-lb
     spec:
       containers:
       - name: etcd
@@ -204,7 +199,7 @@ spec:
         args:
         # command = "/app/vulcand"
         - -etcd=http://127.0.0.1:4001
-        - -statsdAddr=kube-metrics:8125
+        - -statsdAddr=vulcand-metrics-udp:8125
         - -statsdPrefix=vulcand
         ports:
         - containerPort: 8181
